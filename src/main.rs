@@ -37,7 +37,7 @@ fn main() {
     App::build()
         .add_plugins(DefaultPlugins)
         .add_resource(WindowDescriptor {
-            title: "Space Shooter".to_string(),
+            title: "Space Invaders".to_string(),
             width: 1024,
             height: 1024,
             vsync: true,
@@ -59,14 +59,10 @@ fn setup(
     asset_server: Res<AssetServer>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    let player_texture_handle = asset_server
-        .load("/Users/nzh/prog/myrepos/bevy-space-shooter/assets/textures/playerShip1_blue.png");
-    let player_laser_texture_handle = asset_server
-        .load("/Users/nzh/prog/myrepos/bevy-space-shooter/assets/textures/laserBlue01.png");
-    let enemy_texture_handle = asset_server
-        .load("/Users/nzh/prog/myrepos/bevy-space-shooter/assets/textures/enemyRed1.png");
-    let font_handle = asset_server
-        .load("/Users/nzh/prog/myrepos/bevy-space-shooter/assets/fonts/SourceCodePro-Regular.ttf");
+    let player_texture_handle = asset_server.load("../assets/textures/playerShip1_blue.png");
+    let player_laser_texture_handle = asset_server.load("../assets/textures/laserBlue01.png");
+    let enemy_texture_handle = asset_server.load("../assets/textures/enemyRed1.png");
+    let font_handle = asset_server.load("../assets/fonts/SourceCodePro-Regular.ttf");
 
     commands
         .spawn(Camera2dComponents::default())
@@ -185,16 +181,22 @@ fn collided(t1: &Vec3, t2: &Vec3, dist: f32) -> bool {
 /// Check if any player lasers have hit any enemies
 fn enemy_hit_detection(
     mut commands: Commands,
-    mut e_q: Query<(Entity, &mut Enemy, &mut Transform)>,
-    mut l_q: Query<(Entity, &mut PlayerLaser, &mut Transform)>,
-    mut t_q: Query<(&mut Score, &mut Text)>,
+    mut enemy_q: Query<(Entity, &mut Enemy, &mut Transform)>,
+    mut laser_q: Query<(Entity, &mut PlayerLaser, &mut Transform)>,
+    mut score_q: Query<(&mut Score, &mut Text)>,
 ) {
     //let mut player = p_query.iter_mut().next().unwrap();
-    let (mut score, mut text) = t_q.iter_mut().next().unwrap();
-    for ((e_ent, _, e_transform), (l_ent, _, l_transform)) in e_q.iter_mut().zip(l_q.iter_mut()) {
-        if collided(&e_transform.translation, &l_transform.translation, 100.) {
-            commands.despawn(e_ent);
-            commands.despawn(l_ent);
+    let (mut score, mut text) = score_q.iter_mut().next().unwrap();
+    for ((enemy_ent, _, enemy_transform), (laser_ent, _, laser_transform)) in
+        enemy_q.iter_mut().zip(laser_q.iter_mut())
+    {
+        if collided(
+            &enemy_transform.translation,
+            &laser_transform.translation,
+            60.,
+        ) {
+            commands.despawn(enemy_ent);
+            commands.despawn(laser_ent);
             score.value += 1;
             text.value = format!("{}", score.value);
         }
