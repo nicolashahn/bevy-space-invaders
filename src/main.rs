@@ -23,9 +23,14 @@ struct PlayerLaser {
 struct MaterialHandles(Vec<Handle<ColorMaterial>>);
 
 #[derive(Debug)]
-struct Enemy {
+struct Enemy {}
+
+#[derive(Debug)]
+struct Fleet {
     speed: f32,
     dir: f32,
+    x: f32,
+    // don't need state for y
 }
 
 #[derive(Debug)]
@@ -51,7 +56,8 @@ fn main() {
         .add_startup_system(setup.system())
         .add_system(player_control.system())
         .add_system(weapons.system())
-        .add_system(enemy_hit_detection.system())
+        .add_system(laser_enemy_hit_detection.system())
+        .add_system(player_enemy_hit_detection.system())
         .add_system(player_lasers.system())
         .add_system(enemies.system())
         .run();
@@ -73,7 +79,11 @@ fn setup(
         // player
         .spawn(SpriteBundle {
             material: materials.add(player_texture_handle.into()),
-            transform: Transform::from_translation(Vec3::new(0.0, -256.0, 0.0)),
+            transform: Transform {
+                translation: Vec3::new(0.0, -256.0, 0.0),
+                rotation: Quat::identity(),
+                scale: Vec3::new(0.5, 0.5, 0.5),
+            },
             ..Default::default()
         })
         .with(Player { speed: 400.0 })
@@ -104,20 +114,40 @@ fn setup(
             },
             ..Default::default()
         })
-        .with(Score { value: 0 });
+        .with(Score { value: 0 })
+        // enemy fleet position
+        .with(Fleet {
+            speed: 1.5,
+            dir: 1.,
+            x: 0.,
+        });
 
-    for i in 0..5 {
-        commands
-            .spawn(SpriteBundle {
-                material: materials.add(enemy_texture_handle.clone().into()),
-                transform: Transform::from_translation(Vec3::new(i as f32 * 100., 256.0, 0.0)),
-                ..Default::default()
-            })
-            .with(Enemy { speed: 2., dir: 1. });
+    // individual enemies
+    let x_offset = -350.;
+    let y_offset = 50.;
+    let scale = 0.5;
+    for x in 0..11 {
+        for y in 0..5 {
+            commands
+                .spawn(SpriteBundle {
+                    material: materials.add(enemy_texture_handle.clone().into()),
+                    transform: Transform {
+                        translation: Vec3::new(
+                            x_offset + x as f32 * 70.,
+                            y_offset + (y as f32 * 70.),
+                            0.0,
+                        ),
+                        rotation: Quat::identity(),
+                        scale: Vec3::new(scale, scale, scale),
+                    },
+                    ..Default::default()
+                })
+                .with(Enemy {});
+        }
     }
 }
 
-/// handles all player input
+/// Handles all player input, movement of player sprite, and weapon fired status
 fn player_control(
     time: Res<Time>,
     keyboard_input: Res<Input<KeyCode>>,
@@ -135,6 +165,7 @@ fn player_control(
         weapon_fired = true;
     }
     if keyboard_input.pressed(KeyCode::Escape) {
+        // TODO maybe something less abrupt
         panic!("player terminated game");
     }
 
@@ -147,7 +178,7 @@ fn player_control(
     }
 }
 
-/// manages weapon cooldown and spawning lasers
+/// Manages weapon cooldown and spawning lasers
 fn weapons(
     commands: &mut Commands, /* this must be the fist argument for bevy to recognize this as a system */
     time: Res<Time>,
@@ -160,17 +191,22 @@ fn weapons(
             commands
                 .spawn(SpriteBundle {
                     material: materials.0[weapon.material_id].clone(),
-                    transform: Transform::from_translation(weapon.offset + transform.translation),
+                    transform: Transform {
+                        translation: weapon.offset + transform.translation,
+                        scale: Vec3::new(0.5, 0.5, 0.5),
+                        ..Default::default()
+                    },
+
                     ..Default::default()
                 })
-                .with(PlayerLaser { speed: 1000.0 });
+                .with(PlayerLaser { speed: 500.0 });
             weapon.fired = false;
             weapon.cooldown.reset();
         }
     }
 }
 
-/// moves lasers and despawns if out of bounds
+/// Moves lasers and despawns if out of bounds
 fn player_lasers(
     commands: &mut Commands,
     time: Res<Time>,
@@ -185,13 +221,20 @@ fn player_lasers(
     }
 }
 
-/// moves enemies
-fn enemies(mut query: Query<(&mut Enemy, &mut Transform)>) {
-    for (mut enemy, mut transform) in query.iter_mut() {
-        transform.translation += Vec3::new(enemy.dir * enemy.speed, 0., 0.);
-        if f32::abs(transform.translation.x) == 480. {
-            enemy.dir *= -1.;
-            transform.translation += Vec3::new(0., -5., 0.);
+/// Moves enemies
+fn enemies(mut enemy_q: Query<(&mut Enemy, &mut Transform)>, mut fleet_q: Query<&mut Fleet>) {
+    let mut fleet = fleet_q.iter_mut().next().unwrap();
+    fleet.x += fleet.speed * fleet.dir;
+    let mut moved_down = false;
+    if f32::abs(fleet.x) >= 200. {
+        fleet.dir *= -1.;
+        moved_down = true;
+    }
+
+    for (_, mut transform) in enemy_q.iter_mut() {
+        transform.translation.x += fleet.dir * fleet.speed;
+        if moved_down {
+            transform.translation.y -= 10.;
         }
     }
 }
@@ -201,27 +244,48 @@ fn collided(t1: &Vec3, t2: &Vec3, dist: f32) -> bool {
     f32::abs(t1.x - t2.x) <= dist && f32::abs(t1.y - t2.y) <= dist
 }
 
-/// Check if any player lasers have hit any enemies
-fn enemy_hit_detection(
+/// Check if any player lasers have hit any enemies, despawn the enemy and laser if so and update
+/// score and increase fleet speed
+fn laser_enemy_hit_detection(
     commands: &mut Commands,
     mut enemy_q: Query<(Entity, &mut Enemy, &mut Transform)>,
     mut laser_q: Query<(Entity, &mut PlayerLaser, &mut Transform)>,
     mut score_q: Query<(&mut Score, &mut Text)>,
+    mut fleet_q: Query<&mut Fleet>,
 ) {
-    //let mut player = p_query.iter_mut().next().unwrap();
+    let mut fleet = fleet_q.iter_mut().next().unwrap();
     let (mut score, mut text) = score_q.iter_mut().next().unwrap();
     for (enemy_ent, _, enemy_transform) in enemy_q.iter_mut() {
         for (laser_ent, _, laser_transform) in laser_q.iter_mut() {
             if collided(
                 &enemy_transform.translation,
                 &laser_transform.translation,
-                60., // rough estimate of how big the enemies are
+                25., // rough estimate of how big the enemies are
             ) {
                 commands.despawn(enemy_ent);
                 commands.despawn(laser_ent);
                 score.value += 1;
                 text.value = format!("{}", score.value);
+                fleet.speed += 0.2;
             }
+        }
+    }
+}
+
+/// Check if player has hit an enemy, if so: gg no re
+fn player_enemy_hit_detection(
+    mut enemy_q: Query<(&Enemy, &Transform)>,
+    mut player_q: Query<(&Player, &Transform)>,
+) {
+    let (_, player_transform) = player_q.iter_mut().next().unwrap();
+    for (_, enemy_transform) in enemy_q.iter_mut() {
+        if collided(
+            &enemy_transform.translation,
+            &player_transform.translation,
+            35.,
+        ) {
+            // TODO maybe something less abrupt
+            panic!("you lose");
         }
     }
 }
