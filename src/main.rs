@@ -38,8 +38,8 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_resource(WindowDescriptor {
             title: "Space Invaders".to_string(),
-            width: 1024,
-            height: 1024,
+            width: 1024.,
+            height: 1024.,
             vsync: true,
             resizable: false,
             ..Default::default()
@@ -55,7 +55,7 @@ fn main() {
 }
 
 fn setup(
-    mut commands: Commands,
+    commands: &mut Commands,
     asset_server: Res<AssetServer>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
@@ -65,10 +65,10 @@ fn setup(
     let font_handle = asset_server.load("../assets/fonts/SourceCodePro-Regular.ttf");
 
     commands
-        .spawn(Camera2dComponents::default())
-        .spawn(UiCameraComponents::default())
+        .spawn(Camera2dBundle::default())
+        .spawn(CameraUiBundle::default())
         // player
-        .spawn(SpriteComponents {
+        .spawn(SpriteBundle {
             material: materials.add(player_texture_handle.into()),
             transform: Transform::from_translation(Vec3::new(0.0, -256.0, 0.0)),
             ..Default::default()
@@ -84,21 +84,15 @@ fn setup(
             cooldown: Timer::from_seconds(0.4, false),
             material_id: 0,
         })
-        // enemy
-        .spawn(SpriteComponents {
-            material: materials.add(enemy_texture_handle.into()),
-            transform: Transform::from_translation(Vec3::new(0.0, 256.0, 0.0)),
-            ..Default::default()
-        })
-        .with(Enemy { speed: 2., dir: 1. })
         // score text
-        .spawn(TextComponents {
+        .spawn(TextBundle {
             text: Text {
                 value: "0".into(),
                 font: font_handle,
                 style: TextStyle {
                     color: Color::WHITE,
                     font_size: 60.,
+                    ..Default::default()
                 },
             },
             style: Style {
@@ -108,6 +102,16 @@ fn setup(
             ..Default::default()
         })
         .with(Score { value: 0 });
+
+    for i in 0..5 {
+        commands
+            .spawn(SpriteBundle {
+                material: materials.add(enemy_texture_handle.clone().into()),
+                transform: Transform::from_translation(Vec3::new(i as f32 * 100., 256.0, 0.0)),
+                ..Default::default()
+            })
+            .with(Enemy { speed: 2., dir: 1. });
+    }
 }
 
 fn player_control(
@@ -128,7 +132,8 @@ fn player_control(
     }
 
     for (player, mut transform, weapon) in query.iter_mut() {
-        transform.translation += Vec3::new(movement * player.speed * time.delta_seconds, 0.0, 0.0);
+        transform.translation +=
+            Vec3::new(movement * player.speed * time.delta_seconds(), 0.0, 0.0);
         if let Some(mut w) = weapon {
             w.fired = weapon_fired;
         }
@@ -136,16 +141,16 @@ fn player_control(
 }
 
 fn weapons(
-    mut commands: Commands, /* this must be the fist argument for bevy to recognize this as a system */
+    commands: &mut Commands, /* this must be the fist argument for bevy to recognize this as a system */
     time: Res<Time>,
     materials: ResMut<MaterialHandles>,
     mut query: Query<(&mut Weapon, &Transform)>,
 ) {
     for (mut weapon, transform) in query.iter_mut() {
-        weapon.cooldown.tick(time.delta_seconds);
-        if weapon.cooldown.finished && weapon.fired {
+        weapon.cooldown.tick(time.delta_seconds());
+        if weapon.cooldown.finished() && weapon.fired {
             commands
-                .spawn(SpriteComponents {
+                .spawn(SpriteBundle {
                     material: materials.0[weapon.material_id].clone(),
                     transform: Transform::from_translation(weapon.offset + transform.translation),
                     ..Default::default()
@@ -159,14 +164,14 @@ fn weapons(
 
 fn laser_move(time: Res<Time>, mut query: Query<(&PlayerLaser, &mut Transform)>) {
     for (laser, mut transform) in query.iter_mut() {
-        transform.translation += Vec3::new(0.0, laser.speed * time.delta_seconds, 0.0);
+        transform.translation += Vec3::new(0.0, laser.speed * time.delta_seconds(), 0.0);
     }
 }
 
 fn enemies(mut query: Query<(&mut Enemy, &mut Transform)>) {
     for (mut enemy, mut transform) in query.iter_mut() {
         transform.translation += Vec3::new(enemy.dir * enemy.speed, 0., 0.);
-        if f32::abs(transform.translation.x()) == 480. {
+        if f32::abs(transform.translation.x) == 480. {
             enemy.dir *= -1.;
             transform.translation += Vec3::new(0., -5., 0.);
         }
@@ -175,12 +180,12 @@ fn enemies(mut query: Query<(&mut Enemy, &mut Transform)>) {
 
 /// Return if t1 and t2 are within `dist` units of each other in both x and y axes
 fn collided(t1: &Vec3, t2: &Vec3, dist: f32) -> bool {
-    f32::abs(t1.x() - t2.x()) <= dist && f32::abs(t1.y() - t2.y()) <= dist
+    f32::abs(t1.x - t2.x) <= dist && f32::abs(t1.y - t2.y) <= dist
 }
 
 /// Check if any player lasers have hit any enemies
 fn enemy_hit_detection(
-    mut commands: Commands,
+    commands: &mut Commands,
     mut enemy_q: Query<(Entity, &mut Enemy, &mut Transform)>,
     mut laser_q: Query<(Entity, &mut PlayerLaser, &mut Transform)>,
     mut score_q: Query<(&mut Score, &mut Text)>,
