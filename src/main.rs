@@ -33,13 +33,16 @@ struct Score {
     value: i32,
 }
 
+const WIN_H: f32 = 1024.;
+const WIN_W: f32 = 1024.;
+
 fn main() {
     App::build()
         .add_plugins(DefaultPlugins)
         .add_resource(WindowDescriptor {
             title: "Space Invaders".to_string(),
-            width: 1024.,
-            height: 1024.,
+            width: WIN_W,
+            height: WIN_H,
             vsync: true,
             resizable: false,
             ..Default::default()
@@ -48,9 +51,9 @@ fn main() {
         .add_startup_system(setup.system())
         .add_system(player_control.system())
         .add_system(weapons.system())
-        .add_system(laser_move.system())
-        .add_system(enemies.system())
         .add_system(enemy_hit_detection.system())
+        .add_system(player_lasers.system())
+        .add_system(enemies.system())
         .run();
 }
 
@@ -114,6 +117,7 @@ fn setup(
     }
 }
 
+/// handles all player input
 fn player_control(
     time: Res<Time>,
     keyboard_input: Res<Input<KeyCode>>,
@@ -130,6 +134,9 @@ fn player_control(
     if keyboard_input.pressed(KeyCode::Space) {
         weapon_fired = true;
     }
+    if keyboard_input.pressed(KeyCode::Escape) {
+        panic!("player terminated game");
+    }
 
     for (player, mut transform, weapon) in query.iter_mut() {
         transform.translation +=
@@ -140,6 +147,7 @@ fn player_control(
     }
 }
 
+/// manages weapon cooldown and spawning lasers
 fn weapons(
     commands: &mut Commands, /* this must be the fist argument for bevy to recognize this as a system */
     time: Res<Time>,
@@ -162,12 +170,22 @@ fn weapons(
     }
 }
 
-fn laser_move(time: Res<Time>, mut query: Query<(&PlayerLaser, &mut Transform)>) {
-    for (laser, mut transform) in query.iter_mut() {
+/// moves lasers and despawns if out of bounds
+fn player_lasers(
+    commands: &mut Commands,
+    time: Res<Time>,
+    mut query: Query<(Entity, &PlayerLaser, &mut Transform)>,
+) {
+    for (ent, laser, mut transform) in query.iter_mut() {
         transform.translation += Vec3::new(0.0, laser.speed * time.delta_seconds(), 0.0);
+        // despawn if laser goes outside window bounds
+        if transform.translation.y > WIN_H / 2. {
+            commands.despawn(ent);
+        }
     }
 }
 
+/// moves enemies
 fn enemies(mut query: Query<(&mut Enemy, &mut Transform)>) {
     for (mut enemy, mut transform) in query.iter_mut() {
         transform.translation += Vec3::new(enemy.dir * enemy.speed, 0., 0.);
@@ -192,18 +210,18 @@ fn enemy_hit_detection(
 ) {
     //let mut player = p_query.iter_mut().next().unwrap();
     let (mut score, mut text) = score_q.iter_mut().next().unwrap();
-    for ((enemy_ent, _, enemy_transform), (laser_ent, _, laser_transform)) in
-        enemy_q.iter_mut().zip(laser_q.iter_mut())
-    {
-        if collided(
-            &enemy_transform.translation,
-            &laser_transform.translation,
-            60.,
-        ) {
-            commands.despawn(enemy_ent);
-            commands.despawn(laser_ent);
-            score.value += 1;
-            text.value = format!("{}", score.value);
+    for (enemy_ent, _, enemy_transform) in enemy_q.iter_mut() {
+        for (laser_ent, _, laser_transform) in laser_q.iter_mut() {
+            if collided(
+                &enemy_transform.translation,
+                &laser_transform.translation,
+                60., // rough estimate of how big the enemies are
+            ) {
+                commands.despawn(enemy_ent);
+                commands.despawn(laser_ent);
+                score.value += 1;
+                text.value = format!("{}", score.value);
+            }
         }
     }
 }
