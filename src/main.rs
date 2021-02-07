@@ -1,9 +1,22 @@
 /// Space Invaders!
 use bevy::prelude::*;
+use rand::seq::SliceRandom;
 
 #[derive(Debug)]
 struct Player {
     speed: f32,
+}
+
+#[derive(Debug)]
+enum GameStatus {
+    Ongoing,
+    Won,
+    Lost,
+}
+
+#[derive(Debug)]
+struct GameState {
+    status: GameStatus,
 }
 
 #[derive(Debug)]
@@ -34,6 +47,17 @@ struct Fleet {
 }
 
 #[derive(Debug)]
+struct EnemyWeapon {
+    cooldown: Timer,
+    material_id: usize,
+}
+
+#[derive(Debug)]
+struct EnemyLaser {
+    speed: f32,
+}
+
+#[derive(Debug)]
 struct Score {
     value: i32,
 }
@@ -59,7 +83,11 @@ fn main() {
         .add_system(laser_enemy_hit_detection.system())
         .add_system(player_enemy_hit_detection.system())
         .add_system(player_lasers.system())
-        .add_system(enemies.system())
+        .add_system(enemy_movement.system())
+        .add_system(enemy_weapons.system())
+        .add_system(enemy_lasers.system())
+        .add_system(check_for_win.system())
+        .add_system(game_over.system())
         .run();
 }
 
@@ -71,6 +99,7 @@ fn setup(
     let player_texture_handle = asset_server.load("../assets/textures/playerShip1_blue.png");
     let player_laser_texture_handle = asset_server.load("../assets/textures/laserBlue01.png");
     let enemy_texture_handle = asset_server.load("../assets/textures/enemyRed1.png");
+    let enemy_laser_texture_handle = asset_server.load("../assets/textures/laserRed02.png");
     let font_handle = asset_server.load("../assets/fonts/SourceCodePro-Regular.ttf");
 
     commands
@@ -89,13 +118,18 @@ fn setup(
         .with(Player { speed: 400.0 })
         // weapon
         .insert_resource(MaterialHandles(vec![
-            materials.add(player_laser_texture_handle.into())
+            materials.add(player_laser_texture_handle.into()),
+            materials.add(enemy_laser_texture_handle.into()),
         ]))
         .with(Weapon {
             fired: false,
             offset: Vec3::new(0.0, 30.0, 0.0),
-            cooldown: Timer::from_seconds(0.4, false),
+            cooldown: Timer::from_seconds(0.5, false),
             material_id: 0,
+        })
+        .with(EnemyWeapon {
+            cooldown: Timer::from_seconds(1., false),
+            material_id: 1,
         })
         // score text
         .spawn(TextBundle {
@@ -120,6 +154,9 @@ fn setup(
             speed: 1.5,
             dir: 1.,
             x: 0.,
+        })
+        .with(GameState {
+            status: GameStatus::Ongoing,
         });
 
     // individual enemies
@@ -185,7 +222,7 @@ fn weapons(
     materials: ResMut<MaterialHandles>,
     mut query: Query<(&mut Weapon, &Transform)>,
 ) {
-    for (mut weapon, transform) in query.iter_mut() {
+    if let Some((mut weapon, transform)) = query.iter_mut().next() {
         weapon.cooldown.tick(time.delta_seconds());
         if weapon.cooldown.finished() && weapon.fired {
             commands
@@ -222,7 +259,10 @@ fn player_lasers(
 }
 
 /// Moves enemies
-fn enemies(mut enemy_q: Query<(&mut Enemy, &mut Transform)>, mut fleet_q: Query<&mut Fleet>) {
+fn enemy_movement(
+    mut enemy_q: Query<(&mut Enemy, &mut Transform)>,
+    mut fleet_q: Query<&mut Fleet>,
+) {
     let mut fleet = fleet_q.iter_mut().next().unwrap();
     fleet.x += fleet.speed * fleet.dir;
     let mut moved_down = false;
@@ -235,6 +275,60 @@ fn enemies(mut enemy_q: Query<(&mut Enemy, &mut Transform)>, mut fleet_q: Query<
         transform.translation.x += fleet.dir * fleet.speed;
         if moved_down {
             transform.translation.y -= 10.;
+        }
+    }
+}
+
+/// If all enemies are gone, game ends in a win
+fn check_for_win(enemy_q: Query<&Enemy>, mut gamestate_q: Query<&mut GameState>) {
+    if enemy_q.iter().count() == 0 {
+        gamestate_q.iter_mut().next().unwrap().status = GameStatus::Won;
+    }
+}
+
+/// Manages weapon cooldown and spawning lasers
+fn enemy_weapons(
+    commands: &mut Commands, /* this must be the fist argument for bevy to recognize this as a system */
+    time: Res<Time>,
+    materials: ResMut<MaterialHandles>,
+    mut weapon_q: Query<&mut EnemyWeapon>,
+    enemy_q: Query<(&Enemy, &Transform)>,
+) {
+    if let Some(mut weapon) = weapon_q.iter_mut().next() {
+        weapon.cooldown.tick(time.delta_seconds());
+        if weapon.cooldown.finished() {
+            let mut enemies = enemy_q.iter().collect::<Vec<_>>();
+            enemies.shuffle(&mut rand::thread_rng());
+            if let Some((_enemy, &transform)) = enemies.iter().next() {
+                commands
+                    .spawn(SpriteBundle {
+                        material: materials.0[weapon.material_id].clone(),
+                        transform: Transform {
+                            translation: transform.translation,
+                            scale: Vec3::new(0.5, 0.5, 0.5),
+                            ..Default::default()
+                        },
+
+                        ..Default::default()
+                    })
+                    .with(EnemyLaser { speed: 300.0 });
+            }
+            weapon.cooldown.reset();
+        }
+    }
+}
+
+/// Moves enemy lasers and despawns if out of bounds
+fn enemy_lasers(
+    commands: &mut Commands,
+    time: Res<Time>,
+    mut query: Query<(Entity, &EnemyLaser, &mut Transform)>,
+) {
+    for (ent, laser, mut transform) in query.iter_mut() {
+        transform.translation -= Vec3::new(0.0, laser.speed * time.delta_seconds(), 0.0);
+        // despawn if laser goes outside window bounds
+        if transform.translation.y < -WIN_H / 2. {
+            commands.despawn(ent);
         }
     }
 }
@@ -272,20 +366,47 @@ fn laser_enemy_hit_detection(
     }
 }
 
-/// Check if player has hit an enemy, if so: gg no re
+/// Check if player has hit an enemy or enemy laser, if so: gg no re
 fn player_enemy_hit_detection(
+    commands: &mut Commands,
     mut enemy_q: Query<(&Enemy, &Transform)>,
-    mut player_q: Query<(&Player, &Transform)>,
+    mut player_q: Query<(Entity, &Player, &Transform)>,
+    mut laser_q: Query<(Entity, &EnemyLaser, &Transform)>,
+    mut gamestate_q: Query<&mut GameState>,
 ) {
-    let (_, player_transform) = player_q.iter_mut().next().unwrap();
-    for (_, enemy_transform) in enemy_q.iter_mut() {
-        if collided(
-            &enemy_transform.translation,
-            &player_transform.translation,
-            35.,
-        ) {
-            // TODO maybe something less abrupt
-            panic!("you lose");
+    if let Some((player, _, player_transform)) = player_q.iter_mut().next() {
+        let mut gamestate = gamestate_q.iter_mut().next().unwrap();
+        for (_, enemy_transform) in enemy_q.iter_mut() {
+            if collided(
+                &enemy_transform.translation,
+                &player_transform.translation,
+                35.,
+            ) {
+                gamestate.status = GameStatus::Lost;
+                commands.despawn(player);
+            }
         }
+        for (laser, _, laser_transform) in laser_q.iter_mut() {
+            if collided(
+                &laser_transform.translation,
+                &player_transform.translation,
+                20.,
+            ) {
+                gamestate.status = GameStatus::Lost;
+                commands.despawn(player);
+                commands.despawn(laser);
+            }
+        }
+    }
+}
+
+/// Check if the game is over by either winning or losing
+fn game_over(gamestate_q: Query<&GameState>, mut score_q: Query<(&mut Score, &mut Text)>) {
+    // temporarily using score text to communicate game end state
+    let (_, mut text) = score_q.iter_mut().next().unwrap();
+    match gamestate_q.iter().next().unwrap().status {
+        GameStatus::Ongoing => (),
+        GameStatus::Won => text.value = "you won!".into(),
+        GameStatus::Lost => text.value = "you lost!".into(),
     }
 }
